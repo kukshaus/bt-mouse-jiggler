@@ -4,21 +4,46 @@ BLE mouse jiggler for ESP32-S3. Keeps your computer awake by moving the cursor a
 
 ## Features
 
+- **Plug & play** – powered by USB, auto-reconnects to a paired host and starts jiggling on its own
 - **BLE HID Mouse** – pairs as a Bluetooth mouse
 - **Stealth name** – advertises as a real, on-market Logitech model (manufacturer "Logitech"), chosen from a built-in list
+- **Profiles** – pick a predefined config stack (model + interval + schedule) by number
 - **Random jiggler** – moves the cursor at a random interval (default 1–2 min) so the timing isn't perfectly periodic
-- **Schedule** – optional start/end time window during which jiggling is active (e.g. 09:00–17:00)
-- **LED status** – shows connection state
+- **Schedule** – optional start/end time window during which jiggling is active (e.g. off after 17:30)
+- **Button toggle** – onboard BOOT button (GPIO0) turns the jiggler on/off; state survives reboots
+- **Status LED** – onboard RGB LED: 🟢 green = running/armed, 🔴 red = off
 - **Serial menu** – configure via USB (115200 baud)
 - **Demo mode** – mouse draws a circle (100px, 3s)
-- **Persistent settings** – model, interval range, distance and schedule saved via Preferences
+- **Persistent settings** – model, interval range, distance, schedule and on/off state saved via Preferences
+
+### Profiles
+
+| # | Profile | Interval | Schedule |
+|---|---------|----------|----------|
+| 1 | Standard | 1–2 min | always on |
+| 2 | Mein PC | 22–119 s | on until **17:30** |
+| 3 | Stealth schnell | 30–90 s | always on (G Pro X Superlight) |
+| 4 | Büro | 45–90 s | 08:00–17:30 |
+
+Apply one with serial menu `2`. Edit the `PROFILES[]` array in `bt-mouse.ino` to add your own.
+
+### Status LED & button
+
+- **RGB LED** (GPIO48):
+  - 🟢 **solid green** – on, connected, jiggling
+  - 🟢 **blinking green** – on, but not yet connected over Bluetooth (armed/waiting)
+  - 🔴 **solid red** – off (BOOT button pressed off) **or** outside the schedule window (e.g. after 17:30)
+- **BOOT button** (GPIO0) – press to toggle the jiggler on/off. Same as serial menu `8`.
+  Wire an external push-button from GPIO0 to GND if you want a dedicated button.
 
 ### Time / schedule note
 
 The ESP32 has no RTC or network time here, so the schedule needs a time reference: set
-the current time once via the serial menu (**5 – Set current time**). The firmware then
-tracks the time of day with `millis()`. After a power-cycle the clock must be set again
-(if it isn't set, the schedule is ignored and the jiggler stays always-on).
+the current time once via the serial menu (**6 – Set current time**). The firmware then
+tracks the time of day with `millis()`. As long as the board stays powered (e.g. from a
+PC that keeps its USB alive), the clock — and the "off at 17:30" — stays correct all day.
+If power is fully cut, set the time again after boot. If the clock isn't set, the schedule
+is ignored and the jiggler stays always-on.
 
 ## Hardware
 
@@ -71,32 +96,37 @@ Find `<YOUR_PORT>` with `arduino-cli board list` (e.g. `/dev/cu.usbmodem...` on 
    ```
    Type `1` to show current settings.
 2. **Pair it**: on your computer's Bluetooth settings, connect to **MX Master 3S**
-   (or whichever Logitech model you picked). Pick a different model with menu `2`.
-3. **Verify jiggling**: with the device connected, the cursor nudges every 1–2 minutes.
-   Press `8` to jiggle immediately, or `9` to run the circle demo.
-4. **Test the schedule**: set the clock with `5` (e.g. your current `HH:MM`), then `6`
+   (or whichever Logitech model you picked). Pick a different model with menu `3`.
+3. **Pick a profile**: menu `2` → choose e.g. *Mein PC (22–119 s, off at 17:30)*.
+4. **Verify jiggling**: with the device connected, the cursor nudges at the configured
+   interval. Press `9` to jiggle immediately, or `0` to run the circle demo.
+5. **Test the button / LED**: press the onboard **BOOT** button (or menu `8`). The RGB
+   LED switches 🟢 green ⇄ 🔴 red and the cursor stops/starts.
+6. **Test the schedule**: set the clock with `6` (your current `HH:MM`), then `7`
    to enable a window. Show settings with `1` – it reports `aktiv` (active) inside the
-   window and `pausiert` (paused) outside it.
+   window and `pausiert` (paused) outside it; the LED turns red outside the window.
 
 ## Configuration
 
 Connect via serial terminal (115200 baud):
 
 ```
-1 – Show settings
-2 – Choose device model (Logitech list)
-3 – Change interval range (random, seconds)
-4 – Change distance (pixels)
-5 – Set current time (HH:MM)
-6 – Configure schedule (enable + start/end HH:MM)
-7 – Reset to defaults
-8 – Jiggle manually
-9 – Demo: draw a circle
+1 – Show settings (incl. green/red status)
+2 – Choose profile
+3 – Choose device model (Logitech list)
+4 – Change interval range (random, seconds)
+5 – Change distance (pixels)
+6 – Set current time (HH:MM)
+7 – Configure schedule (enable + start/end HH:MM)
+8 – Toggle jiggler on/off (same as BOOT button)
+9 – Jiggle manually
+0 – Demo: draw a circle
+r – Reset to defaults
 h – Help
 ```
 
-Changing the model or resetting reboots the ESP32 so the BLE stack re-initializes
-cleanly under the new name.
+Changing the model, applying a profile with a different model, or resetting reboots the
+ESP32 so the BLE stack re-initializes cleanly under the new name.
 
 ## Dependencies
 

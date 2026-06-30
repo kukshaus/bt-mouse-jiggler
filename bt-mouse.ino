@@ -22,18 +22,43 @@ const char *LOGI_MODELS[] = {
 };
 const int LOGI_COUNT = sizeof(LOGI_MODELS) / sizeof(LOGI_MODELS[0]);
 
+// ----------------------------------------------------------------
+// Profile (vordefinierte Konfigurations-Stacks)
+// ----------------------------------------------------------------
+struct Profile {
+  const char *label;
+  int modelIdx;            // Index in LOGI_MODELS
+  unsigned long intMinMs;  // min. Intervall
+  unsigned long intMaxMs;  // max. Intervall
+  bool sched;              // Zeitplan an/aus
+  int sMin, eMin;          // Start/Ende (Minuten seit Mitternacht)
+};
+
+const Profile PROFILES[] = {
+  // label                              model  min      max       sched  start        ende
+  { "Standard (1-2 min, immer an)",        0,  60000UL, 120000UL, false, 9 * 60,      17 * 60 },
+  { "Mein PC (22-119 s, aus ab 17:30)",    0,  22000UL, 119000UL, true,  0,           17 * 60 + 30 },
+  { "Stealth schnell (30-90 s)",          11,  30000UL,  90000UL, false, 9 * 60,      17 * 60 },
+  { "Büro (45-90 s, 08:00-17:30)",         0,  45000UL,  90000UL, true,  8 * 60,      17 * 60 + 30 }
+};
+const int PROFILE_COUNT = sizeof(PROFILES) / sizeof(PROFILES[0]);
+
 // Standardwerte
 #define DEFAULT_MODEL_IDX 0          // "MX Master 3S"
 #define DEFAULT_INT_MIN_MS 60000UL   // 1 Minute
 #define DEFAULT_INT_MAX_MS 120000UL  // 2 Minuten
 #define DEFAULT_DISTANCE 3
 
-// LED
+// LED (WS2812 RGB onboard, ESP32-S3-DevKitC-1)
 #define USE_RGB_BUILTIN true
 #define RGB_LED_PIN 48
 #define USE_STANDARD_LED true
 #define STANDARD_LED_PIN 2
 #define BLINK_MS 500
+
+// Taster: onboard BOOT-Button (GPIO0). Gegen GND -> gedrückt = LOW.
+#define BUTTON_PIN 0
+#define DEBOUNCE_MS 50
 
 Preferences prefs;
 
@@ -42,6 +67,9 @@ String deviceName = LOGI_MODELS[DEFAULT_MODEL_IDX];
 unsigned long intMinMs = DEFAULT_INT_MIN_MS;
 unsigned long intMaxMs = DEFAULT_INT_MAX_MS;
 int distance = DEFAULT_DISTANCE;
+
+// Master-Schalter (Taster / Menü): true = Jiggler aktiv
+bool jigglerEnabled = true;
 
 // Zeitplan
 bool scheduleEnabled = false;
@@ -59,15 +87,12 @@ bool lastConn = false;
 unsigned long lastBlink = 0;
 bool blinkState = false;
 
-BleMouse *mouse = nullptr;
+// Taster-Entprellung
+int btnReading = HIGH;
+int btnState = HIGH;
+unsigned long lastBtnChange = 0;
 
-// ----------------------------------------------------------------
-// LED
-// ----------------------------------------------------------------
-void updLED(bool on) {
-  if (USE_RGB_BUILTIN) neopixelWrite(RGB_LED_PIN, 0, 0, on ? 0 : 30);
-  if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, on ? LOW : HIGH);
-}
+BleMouse *mouse = nullptr;
 
 // ----------------------------------------------------------------
 // Software-Uhr
@@ -93,6 +118,42 @@ bool inSchedule() {
   return now >= startMin || now < endMin;  // über Mitternacht
 }
 
+// Soll JETZT gejiggelt werden? (Master-Schalter + Zeitplan)
+bool jigglerActive() {
+  return jigglerEnabled && inSchedule();
+}
+
+// ----------------------------------------------------------------
+// Status-LED:  GRÜN = läuft/wartet,  ROT = aus (Taster oder Zeitplan)
+// ----------------------------------------------------------------
+void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+  if (USE_RGB_BUILTIN) neopixelWrite(RGB_LED_PIN, r, g, b);
+}
+
+void updateStatusLED() {
+  bool conn = mouse && mouse->isConnected();
+
+  if (!jigglerActive()) {
+    // ROT: per Taster aus ODER außerhalb des Zeitplans (z.B. nach 17:30)
+    setRGB(30, 0, 0);
+    if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, HIGH);  // aus
+    return;
+  }
+  if (conn) {
+    // GRÜN dauerhaft: verbunden und aktiv -> macht den Job
+    setRGB(0, 30, 0);
+    if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, LOW);   // an
+    return;
+  }
+  // GRÜN blinkend: aktiv, aber noch nicht via Bluetooth verbunden
+  if (millis() - lastBlink >= BLINK_MS) {
+    lastBlink = millis();
+    blinkState = !blinkState;
+  }
+  setRGB(0, blinkState ? 30 : 0, 0);
+  if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, blinkState ? LOW : HIGH);
+}
+
 // ----------------------------------------------------------------
 // Zufalls-Intervall
 // ----------------------------------------------------------------
@@ -110,6 +171,7 @@ void loadCfg() {
   intMinMs = prefs.getULong("imin", DEFAULT_INT_MIN_MS);
   intMaxMs = prefs.getULong("imax", DEFAULT_INT_MAX_MS);
   distance = prefs.getInt("dist", DEFAULT_DISTANCE);
+  jigglerEnabled = prefs.getBool("en", true);
   scheduleEnabled = prefs.getBool("sch", false);
   startMin = prefs.getInt("smin", 9 * 60);
   endMin = prefs.getInt("emin", 17 * 60);
@@ -127,6 +189,7 @@ void saveCfg() {
   prefs.putULong("imin", intMinMs);
   prefs.putULong("imax", intMaxMs);
   prefs.putInt("dist", distance);
+  prefs.putBool("en", jigglerEnabled);
   prefs.putBool("sch", scheduleEnabled);
   prefs.putInt("smin", startMin);
   prefs.putInt("emin", endMin);
@@ -138,6 +201,7 @@ void resetCfg() {
   intMinMs = DEFAULT_INT_MIN_MS;
   intMaxMs = DEFAULT_INT_MAX_MS;
   distance = DEFAULT_DISTANCE;
+  jigglerEnabled = true;
   scheduleEnabled = false;
   startMin = 9 * 60;
   endMin = 17 * 60;
@@ -156,6 +220,47 @@ void startMouse() {
   mouse = new BleMouse(deviceName.c_str(), "Logitech", 100);
   mouse->begin();
   Serial.printf("[BLE] Gestartet als '%s' (Logitech)\n", deviceName.c_str());
+}
+
+// Sauberer Neustart (BLE-Library gibt GATT-Handles bei end() nicht frei)
+void rebootClean(const char *msg) {
+  Serial.println(msg);
+  Serial.flush();
+  delay(200);
+  ESP.restart();
+}
+
+// ----------------------------------------------------------------
+// Master-Schalter umschalten (Taster / Menü)
+// ----------------------------------------------------------------
+void setJiggler(bool on) {
+  jigglerEnabled = on;
+  saveCfg();
+  if (on) {
+    lastJiggle = millis();
+    nextInterval = randInterval();
+  }
+  updateStatusLED();
+  Serial.printf("[SCHALTER] Jiggler %s\n", on ? "AN (grün)" : "AUS (rot)");
+}
+
+void toggleJiggler() {
+  setJiggler(!jigglerEnabled);
+}
+
+// ----------------------------------------------------------------
+// Taster (BOOT-Button) – entprellt, Flanke gedrückt schaltet um
+// ----------------------------------------------------------------
+void handleButton() {
+  int reading = digitalRead(BUTTON_PIN);
+  if (reading != btnReading) {
+    lastBtnChange = millis();
+    btnReading = reading;
+  }
+  if (millis() - lastBtnChange > DEBOUNCE_MS && reading != btnState) {
+    btnState = reading;
+    if (btnState == LOW) toggleJiggler();  // gedrückt
+  }
 }
 
 // ----------------------------------------------------------------
@@ -196,7 +301,7 @@ void demoKreis() {
 }
 
 // ----------------------------------------------------------------
-// Hilfsfunktion: HH:MM einlesen -> Minuten seit Mitternacht (-1 = ungültig)
+// Hilfsfunktionen
 // ----------------------------------------------------------------
 int parseHHMM(const String &s) {
   int colon = s.indexOf(':');
@@ -221,19 +326,46 @@ String readLine() {
 }
 
 // ----------------------------------------------------------------
+// Profil anwenden
+// ----------------------------------------------------------------
+void applyProfile(const Profile &p) {
+  bool nameChanged = (deviceName != LOGI_MODELS[p.modelIdx]);
+  deviceName = LOGI_MODELS[p.modelIdx];
+  intMinMs = p.intMinMs;
+  intMaxMs = p.intMaxMs;
+  scheduleEnabled = p.sched;
+  startMin = p.sMin;
+  endMin = p.eMin;
+  jigglerEnabled = true;
+  saveCfg();
+  Serial.printf("Profil aktiv: %s\n", p.label);
+  if (p.sched && !clockSet) {
+    Serial.println("WARNUNG: Uhrzeit nicht gesetzt (Menü 6) – Zeitplan wird ignoriert!");
+  }
+  if (nameChanged) {
+    rebootClean("Modell geändert – Neustart...");
+  } else {
+    lastJiggle = millis();
+    nextInterval = randInterval();
+  }
+}
+
+// ----------------------------------------------------------------
 // Serielles Menü
 // ----------------------------------------------------------------
 void menuHilfe() {
   Serial.println(F("\n========== Logi-Mouse Menü =========="));
   Serial.println(F(" 1  – Einstellungen anzeigen"));
-  Serial.println(F(" 2  – Geräte-Modell wählen (Logitech-Liste)"));
-  Serial.println(F(" 3  – Intervall-Bereich ändern (zufällig)"));
-  Serial.println(F(" 4  – Strecke ändern (Pixel)"));
-  Serial.println(F(" 5  – Aktuelle Uhrzeit setzen (HH:MM)"));
-  Serial.println(F(" 6  – Zeitplan konfigurieren"));
-  Serial.println(F(" 7  – Auf Standard zurücksetzen"));
-  Serial.println(F(" 8  – Manuell Jiggeln"));
-  Serial.println(F(" 9  – Demo: Kreis fahren (100px, 3s)"));
+  Serial.println(F(" 2  – Profil wählen"));
+  Serial.println(F(" 3  – Geräte-Modell wählen (Logitech-Liste)"));
+  Serial.println(F(" 4  – Intervall-Bereich ändern (zufällig)"));
+  Serial.println(F(" 5  – Strecke ändern (Pixel)"));
+  Serial.println(F(" 6  – Aktuelle Uhrzeit setzen (HH:MM)"));
+  Serial.println(F(" 7  – Zeitplan konfigurieren"));
+  Serial.println(F(" 8  – Jiggler AN/AUS schalten (= BOOT-Taster)"));
+  Serial.println(F(" 9  – Manuell Jiggeln"));
+  Serial.println(F(" 0  – Demo: Kreis fahren (100px, 3s)"));
+  Serial.println(F(" r  – Auf Standard zurücksetzen"));
   Serial.println(F(" h  – Dieses Menü"));
   Serial.println(F("======================================"));
   Serial.print(F("> "));
@@ -241,6 +373,10 @@ void menuHilfe() {
 
 void menuZeigen() {
   Serial.println(F("--------- Aktuelle Einstellungen ---------"));
+  Serial.printf("Status:    %s\n",
+                !jigglerActive() ? "AUS (rot)"
+                : (mouse && mouse->isConnected() ? "LÄUFT (grün)" : "WARTET (grün blinkt)"));
+  Serial.printf("Schalter:  %s\n", jigglerEnabled ? "AN" : "AUS (Taster)");
   Serial.printf("Modell:    %s (Logitech)\n", deviceName.c_str());
   Serial.printf("Intervall: %lu-%lu s (zufällig)\n", intMinMs / 1000, intMaxMs / 1000);
   Serial.printf("Pixel:     %d\n", distance);
@@ -260,6 +396,22 @@ void menuZeigen() {
   Serial.printf("BLE:       %s\n", mouse && mouse->isConnected() ? "Verbunden" : "Nicht verbunden");
 }
 
+void menuProfil() {
+  Serial.println(F("Verfügbare Profile:"));
+  for (int i = 0; i < PROFILE_COUNT; i++) {
+    Serial.printf("  %d – %s\n", i + 1, PROFILES[i].label);
+  }
+  Serial.print(F("Nummer wählen (Enter = abbrechen): "));
+  String input = readLine();
+  if (input.length() == 0) { Serial.println("Abgebrochen"); return; }
+  int idx = input.toInt();
+  if (idx >= 1 && idx <= PROFILE_COUNT) {
+    applyProfile(PROFILES[idx - 1]);
+  } else {
+    Serial.printf("Ungültig (1-%d)\n", PROFILE_COUNT);
+  }
+}
+
 void menuModell() {
   Serial.println(F("Verfügbare Logitech-Modelle:"));
   for (int i = 0; i < LOGI_COUNT; i++) {
@@ -268,20 +420,12 @@ void menuModell() {
   }
   Serial.print(F("Nummer wählen (Enter = abbrechen): "));
   String input = readLine();
-  if (input.length() == 0) {
-    Serial.println("Abgebrochen");
-    return;
-  }
+  if (input.length() == 0) { Serial.println("Abgebrochen"); return; }
   int idx = input.toInt();
   if (idx >= 1 && idx <= LOGI_COUNT) {
     deviceName = LOGI_MODELS[idx - 1];
     saveCfg();
-    // Sauberer Neustart: BLE-Stack komplett neu initialisieren
-    // (Library gibt GATT-Handles bei mouse->end() nicht vollständig frei)
-    Serial.printf("Modell geändert auf '%s' – Neustart...\n", deviceName.c_str());
-    Serial.flush();
-    delay(200);
-    ESP.restart();
+    rebootClean("Modell geändert – Neustart...");
   } else {
     Serial.printf("Ungültig (1-%d)\n", LOGI_COUNT);
   }
@@ -370,7 +514,7 @@ void menuZeitplan() {
   saveCfg();
   Serial.printf("Zeitplan AN: %s -> %s\n", fmtHHMM(startMin).c_str(), fmtHHMM(endMin).c_str());
   if (!clockSet) {
-    Serial.println("WARNUNG: Uhrzeit nicht gesetzt (Menü 5) – Plan wird ignoriert!");
+    Serial.println("WARNUNG: Uhrzeit nicht gesetzt (Menü 6) – Plan wird ignoriert!");
   }
 }
 
@@ -379,10 +523,7 @@ void menuReset() {
   String input = readLine();
   if (input.equalsIgnoreCase("j")) {
     resetCfg();
-    Serial.println("Auf Standard zurückgesetzt – Neustart...");
-    Serial.flush();
-    delay(200);
-    ESP.restart();
+    rebootClean("Auf Standard zurückgesetzt – Neustart...");
   } else {
     Serial.println("Abgebrochen");
   }
@@ -396,17 +537,19 @@ void handleSerial() {
 
   switch (cmd[0]) {
     case '1': menuZeigen(); break;
-    case '2': menuModell(); break;
-    case '3': menuIntervall(); break;
-    case '4': menuPixel(); break;
-    case '5': menuUhrzeit(); break;
-    case '6': menuZeitplan(); break;
-    case '7': menuReset(); break;
-    case '8':
+    case '2': menuProfil(); break;
+    case '3': menuModell(); break;
+    case '4': menuIntervall(); break;
+    case '5': menuPixel(); break;
+    case '6': menuUhrzeit(); break;
+    case '7': menuZeitplan(); break;
+    case '8': toggleJiggler(); break;
+    case '9':
       jiggle();
       Serial.println("Manuell gejiggelt!");
       break;
-    case '9': demoKreis(); break;
+    case '0': demoKreis(); break;
+    case 'r': case 'R': menuReset(); break;
     case 'h': case 'H': menuHilfe(); break;
     default:  Serial.println("Unbekannt. 'h' für Menü"); break;
   }
@@ -423,10 +566,11 @@ void setup() {
   randomSeed(esp_random());
 
   if (USE_STANDARD_LED) pinMode(STANDARD_LED_PIN, OUTPUT);
-  updLED(false);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   loadCfg();
   startMouse();
+  updateStatusLED();
 
   menuHilfe();
   lastJiggle = millis();
@@ -440,25 +584,21 @@ void loop() {
   bool conn = mouse && mouse->isConnected();
   if (conn != lastConn) {
     lastConn = conn;
-    updLED(conn);
     Serial.println(conn ? "[BLE] Verbunden!" : "[BLE] Getrennt!");
     if (conn) {
       lastJiggle = millis();
       nextInterval = randInterval();
     }
   }
-  if (!conn) {
-    if (millis() - lastBlink >= BLINK_MS) {
-      lastBlink = millis(); blinkState = !blinkState;
-      if (USE_RGB_BUILTIN) neopixelWrite(RGB_LED_PIN, 0, 0, blinkState ? 30 : 0);
-      if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, blinkState ? HIGH : LOW);
-    }
-  }
-  if (conn && inSchedule() && millis() - lastJiggle >= nextInterval) {
+
+  if (jigglerActive() && conn && millis() - lastJiggle >= nextInterval) {
     jiggle();
     lastJiggle = millis();
     nextInterval = randInterval();  // nächstes Intervall neu auswürfeln
   }
+
+  handleButton();
+  updateStatusLED();
   handleSerial();
   delay(10);
 }
