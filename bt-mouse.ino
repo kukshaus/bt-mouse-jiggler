@@ -36,10 +36,10 @@ struct Profile {
 
 const Profile PROFILES[] = {
   // label                              model  min      max       sched  start        ende
-  { "Standard (1-2 min, immer an)",        0,  60000UL, 120000UL, false, 9 * 60,      17 * 60 },
-  { "Mein PC (22-119 s, aus ab 17:30)",    0,  22000UL, 119000UL, true,  0,           17 * 60 + 30 },
-  { "Stealth schnell (30-90 s)",          11,  30000UL,  90000UL, false, 9 * 60,      17 * 60 },
-  { "Büro (45-90 s, 08:00-17:30)",         0,  45000UL,  90000UL, true,  8 * 60,      17 * 60 + 30 }
+  { "Standard (1-2 min, immer an)",        0,  60000UL, 120000UL, false, 9 * 60,      17 * 60 },        // MX Master 3S
+  { "Mein PC (22-119 s, aus ab 17:30)",    2,  22000UL, 119000UL, true,  0,           17 * 60 + 30 },   // MX Anywhere 3
+  { "Stealth schnell (30-90 s)",          11,  30000UL,  90000UL, false, 9 * 60,      17 * 60 },        // G Pro X Superlight
+  { "Büro (45-90 s, 08:00-17:30)",         4,  45000UL,  90000UL, true,  8 * 60,      17 * 60 + 30 }    // M720 Triathlon
 };
 const int PROFILE_COUNT = sizeof(PROFILES) / sizeof(PROFILES[0]);
 

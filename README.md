@@ -22,9 +22,9 @@ BLE mouse jiggler for ESP32-S3. Keeps your computer awake by moving the cursor a
 | # | Profile | Bluetooth name (Logitech model) | Interval | Schedule |
 |---|---------|--------------------------------|----------|----------|
 | 1 | Standard | MX Master 3S | 1–2 min | always on |
-| 2 | Mein PC | MX Master 3S | 22–119 s | on until **17:30** |
+| 2 | Mein PC | MX Anywhere 3 | 22–119 s | on until **17:30** |
 | 3 | Stealth schnell | G Pro X Superlight | 30–90 s | always on |
-| 4 | Büro | MX Master 3S | 45–90 s | 08:00–17:30 |
+| 4 | Büro | M720 Triathlon | 45–90 s | 08:00–17:30 |
 
 The "Bluetooth name" is what the host sees when pairing. Switching to a profile with a
 different model changes the BLE name and triggers a clean reboot. You can also override the
