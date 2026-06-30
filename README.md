@@ -10,7 +10,8 @@ BLE mouse jiggler for ESP32-S3. Keeps your computer awake by moving the cursor a
 - **Profiles** – pick a predefined config stack (model + interval + schedule) by number
 - **Random jiggler** – moves the cursor at a random interval (default 1–2 min) so the timing isn't perfectly periodic
 - **Schedule** – optional start/end time window during which jiggling is active (e.g. off after 17:30)
-- **Button toggle** – onboard BOOT button (GPIO0) turns the jiggler on/off; state survives reboots
+- **Button control** – onboard BOOT button (GPIO0): short click = next profile, long press = on/off
+- **Profile feedback** – green LED blinks the active profile number (1–4×), also on every boot
 - **Status LED** – onboard RGB LED: 🟢 green = running/armed, 🔴 red = off
 - **Serial menu** – configure via USB (115200 baud)
 - **Demo mode** – mouse draws a circle (100px, 3s)
@@ -25,16 +26,27 @@ BLE mouse jiggler for ESP32-S3. Keeps your computer awake by moving the cursor a
 | 3 | Stealth schnell | 30–90 s | always on (G Pro X Superlight) |
 | 4 | Büro | 45–90 s | 08:00–17:30 |
 
-Apply one with serial menu `2`. Edit the `PROFILES[]` array in `bt-mouse.ino` to add your own.
+Apply one with serial menu `2`, or cycle through them with the BOOT button (see below).
+Edit the `PROFILES[]` array in `bt-mouse.ino` to add your own.
 
 ### Status LED & button
 
-- **RGB LED** (GPIO48):
-  - 🟢 **solid green** – on, connected, jiggling
-  - 🟢 **blinking green** – on, but not yet connected over Bluetooth (armed/waiting)
-  - 🔴 **solid red** – off (BOOT button pressed off) **or** outside the schedule window (e.g. after 17:30)
-- **BOOT button** (GPIO0) – press to toggle the jiggler on/off. Same as serial menu `8`.
-  Wire an external push-button from GPIO0 to GND if you want a dedicated button.
+**RGB LED** (GPIO48):
+- 🟢 **solid green** – on, connected, jiggling
+- 🟢 **blinking green** – on, but not yet connected over Bluetooth (armed/waiting)
+- 🔴 **solid red** – off (toggled off) **or** outside the schedule window (e.g. after 17:30)
+- 🟢 **green blinks 1–4×** – the active **profile number**, shown when you switch profiles
+  and once on every boot
+
+**BOOT button** (GPIO0):
+- **Short click** → switch to the next profile; the LED blinks the new profile's number
+- **Long press (~0.7 s)** → toggle the jiggler on/off (same as serial menu `8`)
+
+Switching to a profile that uses a different mouse model briefly reboots (to re-init BLE
+cleanly under the new name); the profile number is blinked again right after the reboot.
+Want dedicated buttons instead? Wire push-buttons from a free GPIO to GND and adapt the
+button handling. The first ~1.5 s after boot the button is ignored, so the board's
+auto-reset circuit can't trigger a false press.
 
 ### Time / schedule note
 
@@ -100,8 +112,11 @@ Find `<YOUR_PORT>` with `arduino-cli board list` (e.g. `/dev/cu.usbmodem...` on 
 3. **Pick a profile**: menu `2` → choose e.g. *Mein PC (22–119 s, off at 17:30)*.
 4. **Verify jiggling**: with the device connected, the cursor nudges at the configured
    interval. Press `9` to jiggle immediately, or `0` to run the circle demo.
-5. **Test the button / LED**: press the onboard **BOOT** button (or menu `8`). The RGB
-   LED switches 🟢 green ⇄ 🔴 red and the cursor stops/starts.
+5. **Test the button / LED**:
+   - **Short click** the onboard **BOOT** button → profile switches and the LED blinks
+     the new profile's number (1–4×).
+   - **Long press** (~0.7 s) → jiggler toggles; the RGB LED switches 🟢 green ⇄ 🔴 red
+     and the cursor stops/starts.
 6. **Test the schedule**: set the clock with `6` (your current `HH:MM`), then `7`
    to enable a window. Show settings with `1` – it reports `aktiv` (active) inside the
    window and `pausiert` (paused) outside it; the LED turns red outside the window.
@@ -118,7 +133,7 @@ Connect via serial terminal (115200 baud):
 5 – Change distance (pixels)
 6 – Set current time (HH:MM)
 7 – Configure schedule (enable + start/end HH:MM)
-8 – Toggle jiggler on/off (same as BOOT button)
+8 – Toggle jiggler on/off (= BOOT button long press; short press = next profile)
 9 – Jiggle manually
 0 – Demo: draw a circle
 r – Reset to defaults

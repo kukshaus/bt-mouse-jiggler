@@ -57,8 +57,12 @@ const int PROFILE_COUNT = sizeof(PROFILES) / sizeof(PROFILES[0]);
 #define BLINK_MS 500
 
 // Taster: onboard BOOT-Button (GPIO0). Gegen GND -> gedrückt = LOW.
+//   kurzer Klick  = nächstes Profil (LED blinkt grün = Profilnummer)
+//   langer Druck  = Jiggler AN/AUS
 #define BUTTON_PIN 0
 #define DEBOUNCE_MS 50
+#define LONGPRESS_MS 700
+#define BTN_GRACE_MS 1500   // Taster nach Boot ignorieren (Auto-Reset-Transienten an GPIO0)
 
 Preferences prefs;
 
@@ -70,6 +74,9 @@ int distance = DEFAULT_DISTANCE;
 
 // Master-Schalter (Taster / Menü): true = Jiggler aktiv
 bool jigglerEnabled = true;
+
+// Aktives Profil (-1 = benutzerdefiniert)
+int profileIdx = 0;
 
 // Zeitplan
 bool scheduleEnabled = false;
@@ -87,10 +94,12 @@ bool lastConn = false;
 unsigned long lastBlink = 0;
 bool blinkState = false;
 
-// Taster-Entprellung
+// Taster-Entprellung + Druckdauer
 int btnReading = HIGH;
 int btnState = HIGH;
 unsigned long lastBtnChange = 0;
+bool btnDown = false;
+unsigned long btnDownAt = 0;
 
 BleMouse *mouse = nullptr;
 
@@ -172,10 +181,12 @@ void loadCfg() {
   intMaxMs = prefs.getULong("imax", DEFAULT_INT_MAX_MS);
   distance = prefs.getInt("dist", DEFAULT_DISTANCE);
   jigglerEnabled = prefs.getBool("en", true);
+  profileIdx = prefs.getInt("prof", 0);
   scheduleEnabled = prefs.getBool("sch", false);
   startMin = prefs.getInt("smin", 9 * 60);
   endMin = prefs.getInt("emin", 17 * 60);
   prefs.end();
+  if (profileIdx < -1 || profileIdx >= PROFILE_COUNT) profileIdx = -1;
   if (intMinMs < 1000) intMinMs = DEFAULT_INT_MIN_MS;
   if (intMaxMs < intMinMs) intMaxMs = intMinMs;
   if (distance < 1 || distance > 100) distance = DEFAULT_DISTANCE;
@@ -190,6 +201,7 @@ void saveCfg() {
   prefs.putULong("imax", intMaxMs);
   prefs.putInt("dist", distance);
   prefs.putBool("en", jigglerEnabled);
+  prefs.putInt("prof", profileIdx);
   prefs.putBool("sch", scheduleEnabled);
   prefs.putInt("smin", startMin);
   prefs.putInt("emin", endMin);
@@ -202,6 +214,7 @@ void resetCfg() {
   intMaxMs = DEFAULT_INT_MAX_MS;
   distance = DEFAULT_DISTANCE;
   jigglerEnabled = true;
+  profileIdx = 0;
   scheduleEnabled = false;
   startMin = 9 * 60;
   endMin = 17 * 60;
@@ -249,17 +262,34 @@ void toggleJiggler() {
 }
 
 // ----------------------------------------------------------------
-// Taster (BOOT-Button) – entprellt, Flanke gedrückt schaltet um
+// Taster (BOOT-Button) – entprellt
+//   kurzer Klick = nächstes Profil   |   langer Druck = AN/AUS
 // ----------------------------------------------------------------
+void nextProfile();  // Vorwärtsdeklaration
+
 void handleButton() {
   int reading = digitalRead(BUTTON_PIN);
+  // Boot-Phase: Pin nur mitlesen, keine Aktion (Auto-Reset zieht GPIO0 kurz LOW)
+  if (millis() < BTN_GRACE_MS) {
+    btnReading = btnState = reading;
+    btnDown = false;
+    return;
+  }
   if (reading != btnReading) {
     lastBtnChange = millis();
     btnReading = reading;
   }
   if (millis() - lastBtnChange > DEBOUNCE_MS && reading != btnState) {
     btnState = reading;
-    if (btnState == LOW) toggleJiggler();  // gedrückt
+    if (btnState == LOW) {           // heruntergedrückt
+      btnDown = true;
+      btnDownAt = millis();
+    } else if (btnDown) {            // losgelassen
+      btnDown = false;
+      unsigned long dur = millis() - btnDownAt;
+      if (dur >= LONGPRESS_MS) toggleJiggler();  // lang  -> AN/AUS
+      else nextProfile();                        // kurz  -> Profilwechsel
+    }
   }
 }
 
@@ -325,10 +355,23 @@ String readLine() {
   return input;
 }
 
+// LED blinkt n-mal grün -> Profilnummer signalisieren
+void blinkProfile(int n) {
+  for (int i = 0; i < n; i++) {
+    setRGB(0, 40, 0);
+    delay(220);
+    setRGB(0, 0, 0);
+    delay(220);
+  }
+  updateStatusLED();
+}
+
 // ----------------------------------------------------------------
 // Profil anwenden
 // ----------------------------------------------------------------
-void applyProfile(const Profile &p) {
+void applyProfile(int idx) {
+  if (idx < 0 || idx >= PROFILE_COUNT) return;
+  const Profile &p = PROFILES[idx];
   bool nameChanged = (deviceName != LOGI_MODELS[p.modelIdx]);
   deviceName = LOGI_MODELS[p.modelIdx];
   intMinMs = p.intMinMs;
@@ -337,17 +380,26 @@ void applyProfile(const Profile &p) {
   startMin = p.sMin;
   endMin = p.eMin;
   jigglerEnabled = true;
+  profileIdx = idx;
   saveCfg();
-  Serial.printf("Profil aktiv: %s\n", p.label);
+  Serial.printf("Profil %d aktiv: %s\n", idx + 1, p.label);
   if (p.sched && !clockSet) {
     Serial.println("WARNUNG: Uhrzeit nicht gesetzt (Menü 6) – Zeitplan wird ignoriert!");
   }
   if (nameChanged) {
+    // Modellwechsel -> Neustart; Profilnummer wird beim Boot geblinkt
     rebootClean("Modell geändert – Neustart...");
   } else {
     lastJiggle = millis();
     nextInterval = randInterval();
+    blinkProfile(idx + 1);  // grün n-mal = Profilnummer
   }
+}
+
+// Nächstes Profil per Taster
+void nextProfile() {
+  int idx = (profileIdx < 0) ? 0 : (profileIdx + 1) % PROFILE_COUNT;
+  applyProfile(idx);
 }
 
 // ----------------------------------------------------------------
@@ -362,7 +414,8 @@ void menuHilfe() {
   Serial.println(F(" 5  – Strecke ändern (Pixel)"));
   Serial.println(F(" 6  – Aktuelle Uhrzeit setzen (HH:MM)"));
   Serial.println(F(" 7  – Zeitplan konfigurieren"));
-  Serial.println(F(" 8  – Jiggler AN/AUS schalten (= BOOT-Taster)"));
+  Serial.println(F(" 8  – Jiggler AN/AUS schalten (= BOOT-Taster lang)"));
+  Serial.println(F("      Taster kurz = Profil wechseln (LED blinkt Profilnr.)"));
   Serial.println(F(" 9  – Manuell Jiggeln"));
   Serial.println(F(" 0  – Demo: Kreis fahren (100px, 3s)"));
   Serial.println(F(" r  – Auf Standard zurücksetzen"));
@@ -377,6 +430,8 @@ void menuZeigen() {
                 !jigglerActive() ? "AUS (rot)"
                 : (mouse && mouse->isConnected() ? "LÄUFT (grün)" : "WARTET (grün blinkt)"));
   Serial.printf("Schalter:  %s\n", jigglerEnabled ? "AN" : "AUS (Taster)");
+  Serial.printf("Profil:    %s\n",
+                profileIdx >= 0 ? PROFILES[profileIdx].label : "benutzerdefiniert");
   Serial.printf("Modell:    %s (Logitech)\n", deviceName.c_str());
   Serial.printf("Intervall: %lu-%lu s (zufällig)\n", intMinMs / 1000, intMaxMs / 1000);
   Serial.printf("Pixel:     %d\n", distance);
@@ -406,7 +461,7 @@ void menuProfil() {
   if (input.length() == 0) { Serial.println("Abgebrochen"); return; }
   int idx = input.toInt();
   if (idx >= 1 && idx <= PROFILE_COUNT) {
-    applyProfile(PROFILES[idx - 1]);
+    applyProfile(idx - 1);
   } else {
     Serial.printf("Ungültig (1-%d)\n", PROFILE_COUNT);
   }
@@ -424,6 +479,7 @@ void menuModell() {
   int idx = input.toInt();
   if (idx >= 1 && idx <= LOGI_COUNT) {
     deviceName = LOGI_MODELS[idx - 1];
+    profileIdx = -1;  // manuell geändert -> kein Profil
     saveCfg();
     rebootClean("Modell geändert – Neustart...");
   } else {
@@ -446,6 +502,7 @@ void menuIntervall() {
   }
   intMinMs = mn * 1000UL;
   intMaxMs = mx * 1000UL;
+  profileIdx = -1;  // manuell geändert -> kein Profil
   saveCfg();
   lastJiggle = millis();
   nextInterval = randInterval();
@@ -492,6 +549,7 @@ void menuZeitplan() {
 
   if (onoff.equalsIgnoreCase("n")) {
     scheduleEnabled = false;
+    profileIdx = -1;
     saveCfg();
     Serial.println("Zeitplan AUS – Jiggler immer aktiv");
     return;
@@ -511,6 +569,7 @@ void menuZeitplan() {
   startMin = s;
   endMin = e;
   scheduleEnabled = true;
+  profileIdx = -1;  // manuell geändert -> kein Profil
   saveCfg();
   Serial.printf("Zeitplan AN: %s -> %s\n", fmtHHMM(startMin).c_str(), fmtHHMM(endMin).c_str());
   if (!clockSet) {
@@ -567,6 +626,7 @@ void setup() {
 
   if (USE_STANDARD_LED) pinMode(STANDARD_LED_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  btnReading = btnState = digitalRead(BUTTON_PIN);  // Ausgangszustand, keine Falschflanke
 
   loadCfg();
   startMouse();
@@ -575,6 +635,9 @@ void setup() {
   menuHilfe();
   lastJiggle = millis();
   nextInterval = randInterval();
+
+  // Aktuelle Profilnummer beim Start grün blinken (Feedback nach Neustart)
+  if (profileIdx >= 0) blinkProfile(profileIdx + 1);
 }
 
 // ----------------------------------------------------------------
