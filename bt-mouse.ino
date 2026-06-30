@@ -54,7 +54,6 @@ const int PROFILE_COUNT = sizeof(PROFILES) / sizeof(PROFILES[0]);
 #define RGB_LED_PIN 48
 #define USE_STANDARD_LED true
 #define STANDARD_LED_PIN 2
-#define BLINK_MS 500
 
 // Taster: onboard BOOT-Button (GPIO0). Gegen GND -> gedrückt = LOW.
 //   kurzer Klick  = nächstes Profil (LED blinkt grün = Profilnummer)
@@ -91,8 +90,6 @@ long clockBaseSec = 0;          // Sekunden seit Mitternacht beim Setzen
 unsigned long lastJiggle = 0;
 unsigned long nextInterval = DEFAULT_INT_MAX_MS;
 bool lastConn = false;
-unsigned long lastBlink = 0;
-bool blinkState = false;
 
 // Taster-Entprellung + Druckdauer
 int btnReading = HIGH;
@@ -143,24 +140,16 @@ void updateStatusLED() {
   bool conn = mouse && mouse->isConnected();
 
   if (!jigglerActive()) {
-    // ROT: per Taster aus ODER außerhalb des Zeitplans (z.B. nach 17:30)
+    // ROT dauerhaft: per Taster aus ODER außerhalb des Zeitplans (z.B. nach 17:30)
     setRGB(30, 0, 0);
     if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, HIGH);  // aus
     return;
   }
-  if (conn) {
-    // GRÜN dauerhaft: verbunden und aktiv -> macht den Job
-    setRGB(0, 30, 0);
-    if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, LOW);   // an
-    return;
-  }
-  // GRÜN blinkend: aktiv, aber noch nicht via Bluetooth verbunden
-  if (millis() - lastBlink >= BLINK_MS) {
-    lastBlink = millis();
-    blinkState = !blinkState;
-  }
-  setRGB(0, blinkState ? 30 : 0, 0);
-  if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, blinkState ? LOW : HIGH);
+  // GRÜN dauerhaft (kein Blinken):
+  //   hell  = verbunden und macht den Job
+  //   dunkel = an, wartet noch auf die Bluetooth-Verbindung
+  setRGB(0, conn ? 30 : 3, 0);
+  if (USE_STANDARD_LED) digitalWrite(STANDARD_LED_PIN, conn ? LOW : HIGH);
 }
 
 // ----------------------------------------------------------------

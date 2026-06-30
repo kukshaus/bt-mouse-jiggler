@@ -12,7 +12,7 @@ BLE mouse jiggler for ESP32-S3. Keeps your computer awake by moving the cursor a
 - **Schedule** – optional start/end time window during which jiggling is active (e.g. off after 17:30)
 - **Button control** – onboard BOOT button (GPIO0): short click = next profile, long press = on/off
 - **Profile feedback** – green LED blinks the active profile number (1–4×), also on every boot
-- **Status LED** – onboard RGB LED: 🟢 green = running/armed, 🔴 red = off
+- **Status LED** – onboard RGB LED, always solid (no blinking): 🟢 green = on, 🔴 red = off
 - **Serial menu** – configure via USB (115200 baud)
 - **Demo mode** – mouse draws a circle (100px, 3s)
 - **Persistent settings** – model, interval range, distance, schedule and on/off state saved via Preferences
@@ -31,12 +31,12 @@ Edit the `PROFILES[]` array in `bt-mouse.ino` to add your own.
 
 ### Status LED & button
 
-**RGB LED** (GPIO48):
-- 🟢 **solid green** – on, connected, jiggling
-- 🟢 **blinking green** – on, but not yet connected over Bluetooth (armed/waiting)
-- 🔴 **solid red** – off (toggled off) **or** outside the schedule window (e.g. after 17:30)
-- 🟢 **green blinks 1–4×** – the active **profile number**, shown when you switch profiles
-  and once on every boot
+**RGB LED** (GPIO48) — the light is **always steady, never blinks** during normal use:
+- 🟢 **bright green** – on, connected, jiggling (doing the job)
+- 🟢 **dim green** – on, but still waiting for the Bluetooth connection
+- 🔴 **red** – off (toggled off) **or** outside the schedule window (e.g. after 17:30)
+- 🟢 **green blinks 1–4×** – a short signal of the active **profile number**, shown when you
+  switch profiles and once on every boot (the only time the LED blinks)
 
 **BOOT button** (GPIO0):
 - **Short click** → switch to the next profile; the LED blinks the new profile's number
